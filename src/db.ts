@@ -5,7 +5,11 @@ dotenv.config();
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+  // Enable SSL for Render databases (required) and production
+  // For local PostgreSQL, SSL will be ignored if not configured
+  ssl: process.env.DATABASE_URL?.includes('render.com') || process.env.NODE_ENV === 'production'
+    ? { rejectUnauthorized: false }
+    : false,
 });
 
 export default pool;
