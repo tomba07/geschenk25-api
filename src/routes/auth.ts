@@ -112,6 +112,40 @@ router.post('/login', async (req: Request, res: Response) => {
   }
 });
 
+// Search users by username (requires authentication)
+router.get('/search', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+
+    const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+    jwt.verify(token, secret);
+
+    const { q } = req.query;
+    if (!q || typeof q !== 'string' || q.trim().length < 1) {
+      return res.json({ users: [] });
+    }
+
+    const searchTerm = `%${q.toLowerCase().trim()}%`;
+    const result = await pool.query(
+      'SELECT id, username FROM users WHERE username LIKE $1 ORDER BY username LIMIT 20',
+      [searchTerm]
+    );
+
+    res.json({ users: result.rows });
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    console.error('User search error:', error);
+    res.status(500).json({ error: 'Failed to search users' });
+  }
+});
+
 // Verify token (for checking if user is authenticated)
 router.get('/me', async (req: Request, res: Response) => {
   try {
