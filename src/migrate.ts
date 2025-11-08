@@ -47,6 +47,18 @@ async function migrate() {
       )
     `);
 
+    // Create assignments table for Secret Santa
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS assignments (
+        id SERIAL PRIMARY KEY,
+        group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        giver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        receiver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(group_id, giver_id)
+      )
+    `);
+
     // Create indexes
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
@@ -70,6 +82,18 @@ async function migrate() {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_invitations_invitee_id ON invitations(invitee_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_assignments_group_id ON assignments(group_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_assignments_giver_id ON assignments(giver_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_assignments_receiver_id ON assignments(receiver_id)
     `);
 
     console.log('Migration completed successfully');

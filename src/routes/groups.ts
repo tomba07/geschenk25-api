@@ -157,7 +157,13 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
     const group = accessCheck.rows[0];
 
-    // Get members
+    // Get owner info
+    const ownerResult = await pool.query(
+      'SELECT id, username FROM users WHERE id = $1',
+      [group.created_by]
+    );
+
+    // Get members (excluding owner, as they'll be added separately)
     const membersResult = await pool.query(
       `SELECT u.id, u.username, gm.joined_at
        FROM group_members gm
@@ -167,16 +173,19 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       [groupId]
     );
 
-    // Get owner info
-    const ownerResult = await pool.query(
-      'SELECT id, username FROM users WHERE id = $1',
-      [group.created_by]
-    );
+    // Combine owner and members, with owner first
+    const ownerMember = {
+      id: ownerResult.rows[0].id,
+      username: ownerResult.rows[0].username,
+      joined_at: group.created_at, // Use group creation date as joined_at for owner
+    };
+
+    const allMembers = [ownerMember, ...membersResult.rows];
 
     res.json({
       group: {
         ...group,
-        members: membersResult.rows,
+        members: allMembers,
         owner: ownerResult.rows[0],
       },
     });
@@ -344,6 +353,175 @@ router.delete('/:id/members/:userId', async (req: AuthRequest, res: Response) =>
   } catch (error: any) {
     console.error('Error removing member:', error);
     res.status(500).json({ error: 'Failed to remove member' });
+  }
+});
+
+// Assign Secret Santa pairs (owner only)
+router.post('/:id/assign', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    // Check if user is owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only group owner can trigger assignments' });
+    }
+
+    // Get all members (including owner)
+    const membersResult = await pool.query(
+      `SELECT DISTINCT u.id, u.username
+       FROM users u
+       WHERE (u.id = $1 AND u.id IN (SELECT created_by FROM groups WHERE id = $2))
+          OR u.id IN (SELECT user_id FROM group_members WHERE group_id = $2)
+       ORDER BY u.id`,
+      [userId, groupId]
+    );
+
+    const members = membersResult.rows;
+
+    if (members.length < 2) {
+      return res.status(400).json({ error: 'Need at least 2 members to create assignments' });
+    }
+
+    // Create random pairing (Secret Santa algorithm)
+    const shuffled = [...members];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    // Ensure no one is assigned to themselves
+    let validPairing = false;
+    let attempts = 0;
+    const maxAttempts = 100;
+
+    while (!validPairing && attempts < maxAttempts) {
+      validPairing = true;
+      for (let i = 0; i < members.length; i++) {
+        if (members[i].id === shuffled[i].id) {
+          validPairing = false;
+          // Reshuffle using Fisher-Yates
+          for (let j = shuffled.length - 1; j > 0; j--) {
+            const k = Math.floor(Math.random() * (j + 1));
+            [shuffled[j], shuffled[k]] = [shuffled[k], shuffled[j]];
+          }
+          break;
+        }
+      }
+      attempts++;
+    }
+
+    if (!validPairing) {
+      return res.status(500).json({ error: 'Failed to create valid assignments. Please try again.' });
+    }
+
+    // Delete existing assignments for this group
+    await pool.query('DELETE FROM assignments WHERE group_id = $1', [groupId]);
+
+    // Create new assignments
+    for (let i = 0; i < members.length; i++) {
+      await pool.query(
+        'INSERT INTO assignments (group_id, giver_id, receiver_id) VALUES ($1, $2, $3)',
+        [groupId, members[i].id, shuffled[i].id]
+      );
+    }
+
+    res.json({ message: 'Assignments created successfully' });
+  } catch (error: any) {
+    console.error('Error creating assignments:', error);
+    res.status(500).json({ error: 'Failed to create assignments' });
+  }
+});
+
+// Get current user's assignment for a group
+router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    // Check if user has access to this group
+    const accessCheck = await pool.query(
+      `SELECT g.id FROM groups g
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
+      [groupId, userId]
+    );
+
+    if (accessCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Get user's assignment
+    const assignmentResult = await pool.query(
+      `SELECT a.receiver_id, u.username as receiver_username
+       FROM assignments a
+       JOIN users u ON a.receiver_id = u.id
+       WHERE a.group_id = $1 AND a.giver_id = $2`,
+      [groupId, userId]
+    );
+
+    if (assignmentResult.rows.length === 0) {
+      return res.json({ assignment: null });
+    }
+
+    res.json({
+      assignment: {
+        receiver_id: assignmentResult.rows[0].receiver_id,
+        receiver_username: assignmentResult.rows[0].receiver_username,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error fetching assignment:', error);
+    res.status(500).json({ error: 'Failed to fetch assignment' });
+  }
+});
+
+// Get all assignments for a group (owner only, for verification)
+router.get('/:id/assignments', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    // Check if user is owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only group owner can view all assignments' });
+    }
+
+    // Get all assignments
+    const assignmentsResult = await pool.query(
+      `SELECT a.giver_id, a.receiver_id,
+              giver.username as giver_username,
+              receiver.username as receiver_username
+       FROM assignments a
+       JOIN users giver ON a.giver_id = giver.id
+       JOIN users receiver ON a.receiver_id = receiver.id
+       WHERE a.group_id = $1
+       ORDER BY giver.username`,
+      [groupId]
+    );
+
+    res.json({ assignments: assignmentsResult.rows });
+  } catch (error: any) {
+    console.error('Error fetching assignments:', error);
+    res.status(500).json({ error: 'Failed to fetch assignments' });
   }
 });
 
