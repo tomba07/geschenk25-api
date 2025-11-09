@@ -8,8 +8,22 @@ async function migrate() {
         id SERIAL PRIMARY KEY,
         username VARCHAR(50) UNIQUE NOT NULL,
         password_hash VARCHAR(255) NOT NULL,
+        display_name VARCHAR(100),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    // Add display_name column if it doesn't exist (for existing databases)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' AND column_name = 'display_name'
+        ) THEN
+          ALTER TABLE users ADD COLUMN display_name VARCHAR(100);
+        END IF;
+      END $$;
     `);
 
     // Create groups table

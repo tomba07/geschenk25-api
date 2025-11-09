@@ -36,7 +36,7 @@ router.get('/invitations/pending', async (req: AuthRequest, res: Response) => {
     const result = await pool.query(
       `SELECT i.id, i.group_id, i.inviter_id, i.created_at,
               g.name as group_name, g.description as group_description,
-              u.username as inviter_username
+              u.username as inviter_username, u.display_name as inviter_display_name
        FROM invitations i
        JOIN groups g ON i.group_id = g.id
        JOIN users u ON i.inviter_id = u.id
@@ -45,7 +45,13 @@ router.get('/invitations/pending', async (req: AuthRequest, res: Response) => {
       [userId]
     );
 
-    res.json({ invitations: result.rows });
+    // Map results to include display_name
+    const invitations = result.rows.map((row: any) => ({
+      ...row,
+      inviter_display_name: row.inviter_display_name || row.inviter_username,
+    }));
+
+    res.json({ invitations });
   } catch (error: any) {
     console.error('Error fetching invitations:', error);
     res.status(500).json({ error: 'Failed to fetch invitations' });
@@ -159,13 +165,13 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
     // Get owner info
     const ownerResult = await pool.query(
-      'SELECT id, username FROM users WHERE id = $1',
+      'SELECT id, username, display_name FROM users WHERE id = $1',
       [group.created_by]
     );
 
     // Get members (excluding owner, as they'll be added separately)
     const membersResult = await pool.query(
-      `SELECT u.id, u.username, gm.joined_at
+      `SELECT u.id, u.username, u.display_name, gm.joined_at
        FROM group_members gm
        JOIN users u ON gm.user_id = u.id
        WHERE gm.group_id = $1
@@ -174,19 +180,34 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     );
 
     // Combine owner and members, with owner first
+    const owner = ownerResult.rows[0];
     const ownerMember = {
-      id: ownerResult.rows[0].id,
-      username: ownerResult.rows[0].username,
+      id: owner.id,
+      username: owner.username,
+      display_name: owner.display_name || owner.username,
       joined_at: group.created_at, // Use group creation date as joined_at for owner
     };
 
-    const allMembers = [ownerMember, ...membersResult.rows];
+    const allMembers = [
+      ownerMember,
+      ...membersResult.rows.map((m: any) => ({
+        id: m.id,
+        username: m.username,
+        display_name: m.display_name || m.username,
+        joined_at: m.joined_at,
+      })),
+    ];
 
+    const owner = ownerResult.rows[0];
     res.json({
       group: {
         ...group,
         members: allMembers,
-        owner: ownerResult.rows[0],
+        owner: {
+          id: owner.id,
+          username: owner.username,
+          display_name: owner.display_name || owner.username,
+        },
       },
     });
   } catch (error: any) {
@@ -462,7 +483,7 @@ router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
 
     // Get user's assignment
     const assignmentResult = await pool.query(
-      `SELECT a.receiver_id, u.username as receiver_username
+      `SELECT a.receiver_id, u.username as receiver_username, u.display_name as receiver_display_name
        FROM assignments a
        JOIN users u ON a.receiver_id = u.id
        WHERE a.group_id = $1 AND a.giver_id = $2`,
@@ -473,10 +494,12 @@ router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
       return res.json({ assignment: null });
     }
 
+    const row = assignmentResult.rows[0];
     res.json({
       assignment: {
-        receiver_id: assignmentResult.rows[0].receiver_id,
-        receiver_username: assignmentResult.rows[0].receiver_username,
+        receiver_id: row.receiver_id,
+        receiver_username: row.receiver_username,
+        receiver_display_name: row.receiver_display_name || row.receiver_username,
       },
     });
   } catch (error: any) {
@@ -509,7 +532,9 @@ router.get('/:id/assignments', async (req: AuthRequest, res: Response) => {
     const assignmentsResult = await pool.query(
       `SELECT a.giver_id, a.receiver_id,
               giver.username as giver_username,
-              receiver.username as receiver_username
+              giver.display_name as giver_display_name,
+              receiver.username as receiver_username,
+              receiver.display_name as receiver_display_name
        FROM assignments a
        JOIN users giver ON a.giver_id = giver.id
        JOIN users receiver ON a.receiver_id = receiver.id
@@ -518,7 +543,17 @@ router.get('/:id/assignments', async (req: AuthRequest, res: Response) => {
       [groupId]
     );
 
-    res.json({ assignments: assignmentsResult.rows });
+    // Map results to include display_name
+    const assignments = assignmentsResult.rows.map((row: any) => ({
+      giver_id: row.giver_id,
+      receiver_id: row.receiver_id,
+      giver_username: row.giver_username,
+      giver_display_name: row.giver_display_name || row.giver_username,
+      receiver_username: row.receiver_username,
+      receiver_display_name: row.receiver_display_name || row.receiver_username,
+    }));
+
+    res.json({ assignments });
   } catch (error: any) {
     console.error('Error fetching assignments:', error);
     res.status(500).json({ error: 'Failed to fetch assignments' });
