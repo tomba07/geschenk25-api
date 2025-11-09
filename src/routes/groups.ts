@@ -1,4 +1,4 @@
-import express, { Response } from 'express';
+import express, { Request, Response } from 'express';
 import pool from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 
