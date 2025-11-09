@@ -73,6 +73,19 @@ async function migrate() {
       )
     `);
 
+    // Create device_tokens table for push notifications
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS device_tokens (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        token VARCHAR(255) NOT NULL,
+        platform VARCHAR(20) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, token)
+      )
+    `);
+
     // Create indexes
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
@@ -108,6 +121,10 @@ async function migrate() {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_assignments_receiver_id ON assignments(receiver_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_device_tokens_user_id ON device_tokens(user_id)
     `);
 
     console.log('Migration completed successfully');

@@ -248,5 +248,47 @@ router.put('/profile/display-name', async (req: Request, res: Response) => {
   }
 });
 
+// Register device token for push notifications
+router.post('/device-token', async (req: Request, res: Response) => {
+  try {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+
+    if (!token) {
+      return res.status(401).json({ error: 'Token required' });
+    }
+
+    const secret = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+    const decoded: any = jwt.verify(token, secret);
+
+    const { device_token, platform } = req.body;
+
+    if (!device_token || !platform) {
+      return res.status(400).json({ error: 'Device token and platform are required' });
+    }
+
+    if (!['ios', 'android'].includes(platform.toLowerCase())) {
+      return res.status(400).json({ error: 'Platform must be "ios" or "android"' });
+    }
+
+    // Upsert device token
+    await pool.query(
+      `INSERT INTO device_tokens (user_id, token, platform, updated_at)
+       VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+       ON CONFLICT (user_id, token)
+       DO UPDATE SET platform = $3, updated_at = CURRENT_TIMESTAMP`,
+      [decoded.userId, device_token, platform.toLowerCase()]
+    );
+
+    res.json({ message: 'Device token registered successfully' });
+  } catch (error: any) {
+    if (error.name === 'JsonWebTokenError' || error.name === 'TokenExpiredError') {
+      return res.status(401).json({ error: 'Invalid or expired token' });
+    }
+    console.error('Register device token error:', error);
+    res.status(500).json({ error: 'Failed to register device token' });
+  }
+});
+
 export default router;
 

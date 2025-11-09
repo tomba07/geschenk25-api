@@ -1,6 +1,7 @@
 import express, { Request, Response } from 'express';
 import pool from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
+import { sendInvitationNotification } from '../services/notifications';
 
 const router = express.Router();
 
@@ -308,6 +309,16 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'User is already a member of this group' });
     }
 
+    // Get group name and inviter display name for notification
+    const groupResult = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
+    const groupName = groupResult.rows[0]?.name || 'a group';
+    
+    const inviterResult = await pool.query(
+      'SELECT display_name, username FROM users WHERE id = $1',
+      [userId]
+    );
+    const inviterDisplayName = inviterResult.rows[0]?.display_name || inviterResult.rows[0]?.username || 'Someone';
+
     // Check if there's already a pending invitation
     const existingInvite = await pool.query(
       'SELECT id, status FROM invitations WHERE group_id = $1 AND invitee_id = $2',
@@ -331,6 +342,11 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
         [groupId, userId, inviteeId, 'pending']
       );
     }
+
+    // Send push notification (don't wait for it)
+    sendInvitationNotification(inviteeId, inviterDisplayName, groupName).catch((error) => {
+      console.error('Failed to send notification:', error);
+    });
 
     res.json({ message: 'Invitation sent successfully' });
   } catch (error: any) {
