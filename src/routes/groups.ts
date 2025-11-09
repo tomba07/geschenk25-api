@@ -198,7 +198,6 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       })),
     ];
 
-    const owner = ownerResult.rows[0];
     res.json({
       group: {
         ...group,
