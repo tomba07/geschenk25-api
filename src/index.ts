@@ -22,8 +22,17 @@ app.get('/health', (_req: any, res: any) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/groups', groupsRoutes);
 
+// Error handling middleware
+app.use((err: any, _req: any, res: any, _next: any) => {
+  console.error('Unhandled error:', err);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+}).on('error', (err: any) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });
 
