@@ -575,5 +575,39 @@ router.get('/:id/assignments', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Delete all assignments for a group (owner only)
+router.delete('/:id/assignments', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    // Check if user is owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only group owner can delete assignments' });
+    }
+
+    // Delete all assignments for this group
+    await pool.query('DELETE FROM assignments WHERE group_id = $1', [groupId]);
+
+    res.json({ message: 'Assignments deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting assignments:', error);
+    res.status(500).json({ error: 'Failed to delete assignments' });
+  }
+});
+
 export default router;
 
