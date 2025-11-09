@@ -23,7 +23,7 @@ const pool = new Pool({
 });
 
 // Test connection
-pool.on('error', (err) => {
+pool.on('error', (err: any) => {
   console.error('Unexpected error on idle client', err);
 });
 
