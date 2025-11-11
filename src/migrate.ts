@@ -86,6 +86,19 @@ async function migrate() {
       )
     `);
 
+    // Create gift_ideas table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS gift_ideas (
+        id SERIAL PRIMARY KEY,
+        group_id INTEGER NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+        for_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_by_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        idea TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Create indexes
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
@@ -125,6 +138,18 @@ async function migrate() {
 
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_device_tokens_user_id ON device_tokens(user_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_gift_ideas_group_id ON gift_ideas(group_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_gift_ideas_for_user_id ON gift_ideas(for_user_id)
+    `);
+
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_gift_ideas_created_by_id ON gift_ideas(created_by_id)
     `);
 
     console.log('Migration completed successfully');

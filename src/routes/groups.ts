@@ -609,5 +609,287 @@ router.delete('/:id/assignments', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Create gift idea
+router.post('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const { for_user_id, idea } = req.body;
+
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    if (!for_user_id || !idea || idea.trim().length === 0) {
+      return res.status(400).json({ error: 'for_user_id and idea are required' });
+    }
+
+    // Check if user has access to this group (owner or member)
+    const groupCheck = await pool.query(
+      `SELECT g.id FROM groups g
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
+      [groupId, userId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Check if for_user_id is a member of the group (owner or member)
+    const memberCheck = await pool.query(
+      `SELECT 1 FROM groups g
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
+      [groupId, for_user_id]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Target user is not a member of this group' });
+    }
+
+    // Create gift idea
+    const result = await pool.query(
+      `INSERT INTO gift_ideas (group_id, for_user_id, created_by_id, idea)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, group_id, for_user_id, created_by_id, idea, created_at, updated_at`,
+      [groupId, for_user_id, userId, idea.trim()]
+    );
+
+    // Get creator and target user info
+    const creatorResult = await pool.query(
+      'SELECT id, username, display_name FROM users WHERE id = $1',
+      [userId]
+    );
+    const targetResult = await pool.query(
+      'SELECT id, username, display_name FROM users WHERE id = $1',
+      [for_user_id]
+    );
+
+    const giftIdea = result.rows[0];
+    const creator = creatorResult.rows[0];
+    const target = targetResult.rows[0];
+
+    res.status(201).json({
+      gift_idea: {
+        ...giftIdea,
+        created_by: {
+          id: creator.id,
+          username: creator.username,
+          display_name: creator.display_name || creator.username,
+        },
+        for_user: {
+          id: target.id,
+          username: target.username,
+          display_name: target.display_name || target.username,
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error('Error creating gift idea:', error);
+    res.status(500).json({ error: 'Failed to create gift idea' });
+  }
+});
+
+// Get gift ideas for a group
+router.get('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const forUserId = req.query.for_user_id ? parseInt(req.query.for_user_id as string) : null;
+
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    // Check if user has access to this group (owner or member)
+    const groupCheck = await pool.query(
+      `SELECT g.id FROM groups g
+       LEFT JOIN group_members gm ON g.id = gm.group_id
+       WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
+      [groupId, userId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Get user's assignment to see who they're assigned to
+    const assignmentResult = await pool.query(
+      'SELECT receiver_id FROM assignments WHERE group_id = $1 AND giver_id = $2',
+      [groupId, userId]
+    );
+    const assignedToUserId = assignmentResult.rows.length > 0 ? assignmentResult.rows[0].receiver_id : null;
+
+    // Build query - show gift ideas based on context
+    let query = `
+      SELECT gi.id, gi.group_id, gi.for_user_id, gi.created_by_id, gi.idea, gi.created_at, gi.updated_at,
+             creator.username as creator_username, creator.display_name as creator_display_name,
+             target.username as target_username, target.display_name as target_display_name
+      FROM gift_ideas gi
+      JOIN users creator ON gi.created_by_id = creator.id
+      JOIN users target ON gi.for_user_id = target.id
+      WHERE gi.group_id = $1
+    `;
+    const queryParams: any[] = [groupId];
+
+    // Filter logic:
+    // 1. If for_user_id is specified, show ideas for that user
+    // 2. Otherwise, if user has assignment, show ideas for assigned person
+    // 3. Also always show ideas created by the current user
+    if (forUserId) {
+      query += ' AND gi.for_user_id = $2';
+      queryParams.push(forUserId);
+    } else if (assignedToUserId) {
+      // Show ideas for assigned person OR ideas created by current user
+      query += ' AND (gi.for_user_id = $2 OR gi.created_by_id = $3)';
+      queryParams.push(assignedToUserId, userId);
+    } else {
+      // No assignment, show ideas created by current user or for current user
+      query += ' AND (gi.created_by_id = $2 OR gi.for_user_id = $2)';
+      queryParams.push(userId);
+    }
+
+    query += ' ORDER BY gi.created_at DESC';
+
+    const result = await pool.query(query, queryParams);
+
+    // Map results
+    const giftIdeas = result.rows.map((row: any) => ({
+      id: row.id,
+      group_id: row.group_id,
+      for_user_id: row.for_user_id,
+      created_by_id: row.created_by_id,
+      idea: row.idea,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      created_by: {
+        id: row.created_by_id,
+        username: row.creator_username,
+        display_name: row.creator_display_name || row.creator_username,
+      },
+      for_user: {
+        id: row.for_user_id,
+        username: row.target_username,
+        display_name: row.target_display_name || row.target_username,
+      },
+    }));
+
+    res.json({ gift_ideas: giftIdeas });
+  } catch (error: any) {
+    console.error('Error fetching gift ideas:', error);
+    res.status(500).json({ error: 'Failed to fetch gift ideas' });
+  }
+});
+
+// Update gift idea
+router.put('/:id/gift-ideas/:ideaId', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const ideaId = parseInt(req.params.ideaId);
+    const { idea } = req.body;
+
+    if (isNaN(groupId) || isNaN(ideaId)) {
+      return res.status(400).json({ error: 'Invalid group ID or idea ID' });
+    }
+
+    if (!idea || idea.trim().length === 0) {
+      return res.status(400).json({ error: 'Idea is required' });
+    }
+
+    // Check if gift idea exists and user is the creator
+    const ideaCheck = await pool.query(
+      'SELECT id, created_by_id FROM gift_ideas WHERE id = $1 AND group_id = $2',
+      [ideaId, groupId]
+    );
+
+    if (ideaCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Gift idea not found' });
+    }
+
+    if (ideaCheck.rows[0].created_by_id !== userId) {
+      return res.status(403).json({ error: 'Only the creator can update this gift idea' });
+    }
+
+    // Update gift idea
+    const result = await pool.query(
+      `UPDATE gift_ideas 
+       SET idea = $1, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $2
+       RETURNING id, group_id, for_user_id, created_by_id, idea, created_at, updated_at`,
+      [idea.trim(), ideaId]
+    );
+
+    // Get creator and target user info
+    const creatorResult = await pool.query(
+      'SELECT id, username, display_name FROM users WHERE id = $1',
+      [userId]
+    );
+    const targetResult = await pool.query(
+      'SELECT id, username, display_name FROM users WHERE id = $1',
+      [result.rows[0].for_user_id]
+    );
+
+    const giftIdea = result.rows[0];
+    const creator = creatorResult.rows[0];
+    const target = targetResult.rows[0];
+
+    res.json({
+      gift_idea: {
+        ...giftIdea,
+        created_by: {
+          id: creator.id,
+          username: creator.username,
+          display_name: creator.display_name || creator.username,
+        },
+        for_user: {
+          id: target.id,
+          username: target.username,
+          display_name: target.display_name || target.username,
+        },
+      },
+    });
+  } catch (error: any) {
+    console.error('Error updating gift idea:', error);
+    res.status(500).json({ error: 'Failed to update gift idea' });
+  }
+});
+
+// Delete gift idea
+router.delete('/:id/gift-ideas/:ideaId', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const ideaId = parseInt(req.params.ideaId);
+
+    if (isNaN(groupId) || isNaN(ideaId)) {
+      return res.status(400).json({ error: 'Invalid group ID or idea ID' });
+    }
+
+    // Check if gift idea exists and user is the creator
+    const ideaCheck = await pool.query(
+      'SELECT id, created_by_id FROM gift_ideas WHERE id = $1 AND group_id = $2',
+      [ideaId, groupId]
+    );
+
+    if (ideaCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Gift idea not found' });
+    }
+
+    if (ideaCheck.rows[0].created_by_id !== userId) {
+      return res.status(403).json({ error: 'Only the creator can delete this gift idea' });
+    }
+
+    // Delete gift idea
+    await pool.query('DELETE FROM gift_ideas WHERE id = $1', [ideaId]);
+
+    res.json({ message: 'Gift idea deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting gift idea:', error);
+    res.status(500).json({ error: 'Failed to delete gift idea' });
+  }
+});
+
 export default router;
 
