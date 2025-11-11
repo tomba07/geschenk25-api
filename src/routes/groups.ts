@@ -199,6 +199,37 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       })),
     ];
 
+    // Get pending invitations for this group (only if user is owner)
+    let pendingInvitations: any[] = [];
+    if (group.created_by === userId) {
+      // Get member IDs to exclude from pending invitations
+      const memberIds = new Set([
+        group.created_by,
+        ...membersResult.rows.map((m: any) => m.id)
+      ]);
+
+      const invitationsResult = await pool.query(
+        `SELECT i.id, i.invitee_id, i.created_at,
+                u.username, u.display_name
+         FROM invitations i
+         JOIN users u ON i.invitee_id = u.id
+         WHERE i.group_id = $1 AND i.status = 'pending'
+         ORDER BY i.created_at DESC`,
+        [groupId]
+      );
+
+      // Filter out users who are already members
+      pendingInvitations = invitationsResult.rows
+        .filter((row: any) => !memberIds.has(row.invitee_id))
+        .map((row: any) => ({
+          id: row.invitee_id,
+          username: row.username,
+          display_name: row.display_name || row.username,
+          invitation_id: row.id,
+          invited_at: row.created_at,
+        }));
+    }
+
     res.json({
       group: {
         ...group,
@@ -208,6 +239,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
           username: owner.username,
           display_name: owner.display_name || owner.username,
         },
+        pending_invitations: pendingInvitations,
       },
     });
   } catch (error: any) {
