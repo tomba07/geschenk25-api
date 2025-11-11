@@ -2,6 +2,7 @@ import express, { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import pool from '../db';
+import { AuthRequest, authenticateToken } from '../middleware/auth';
 
 const router = express.Router();
 
@@ -287,6 +288,34 @@ router.post('/device-token', async (req: Request, res: Response) => {
     }
     console.error('Register device token error:', error);
     res.status(500).json({ error: 'Failed to register device token' });
+  }
+});
+
+// Delete account
+router.delete('/account', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+
+    if (!userId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Delete the user - this will cascade delete all related data due to ON DELETE CASCADE
+    // Related data includes: groups (and their members, invitations, assignments, gift_ideas), 
+    // group_members, invitations, assignments, gift_ideas, device_tokens
+    const result = await pool.query(
+      'DELETE FROM users WHERE id = $1 RETURNING id, username',
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ message: 'Account deleted successfully' });
+  } catch (error: any) {
+    console.error('Error deleting account:', error);
+    res.status(500).json({ error: 'Failed to delete account' });
   }
 });
 
