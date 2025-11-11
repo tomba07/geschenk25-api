@@ -699,7 +699,7 @@ router.post('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
-    const { for_user_id, idea } = req.body;
+    const { for_user_id, idea, link } = req.body;
 
     if (isNaN(groupId)) {
       return res.status(400).json({ error: 'Invalid group ID' });
@@ -735,10 +735,10 @@ router.post('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
 
     // Create gift idea
     const result = await pool.query(
-      `INSERT INTO gift_ideas (group_id, for_user_id, created_by_id, idea)
-       VALUES ($1, $2, $3, $4)
-       RETURNING id, group_id, for_user_id, created_by_id, idea, created_at, updated_at`,
-      [groupId, for_user_id, userId, idea.trim()]
+      `INSERT INTO gift_ideas (group_id, for_user_id, created_by_id, idea, link)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING id, group_id, for_user_id, created_by_id, idea, link, created_at, updated_at`,
+      [groupId, for_user_id, userId, idea.trim(), link?.trim() || null]
     );
 
     // Get creator and target user info
@@ -808,7 +808,7 @@ router.get('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
 
     // Build query - show gift ideas based on context
     let query = `
-      SELECT gi.id, gi.group_id, gi.for_user_id, gi.created_by_id, gi.idea, gi.created_at, gi.updated_at,
+      SELECT gi.id, gi.group_id, gi.for_user_id, gi.created_by_id, gi.idea, gi.link, gi.created_at, gi.updated_at,
              creator.username as creator_username, creator.display_name as creator_display_name,
              target.username as target_username, target.display_name as target_display_name
       FROM gift_ideas gi
@@ -846,6 +846,7 @@ router.get('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
       for_user_id: row.for_user_id,
       created_by_id: row.created_by_id,
       idea: row.idea,
+      link: row.link,
       created_at: row.created_at,
       updated_at: row.updated_at,
       created_by: {
@@ -873,7 +874,7 @@ router.put('/:id/gift-ideas/:ideaId', async (req: AuthRequest, res: Response) =>
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
     const ideaId = parseInt(req.params.ideaId);
-    const { idea } = req.body;
+    const { idea, link } = req.body;
 
     if (isNaN(groupId) || isNaN(ideaId)) {
       return res.status(400).json({ error: 'Invalid group ID or idea ID' });
@@ -900,10 +901,10 @@ router.put('/:id/gift-ideas/:ideaId', async (req: AuthRequest, res: Response) =>
     // Update gift idea
     const result = await pool.query(
       `UPDATE gift_ideas 
-       SET idea = $1, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $2
-       RETURNING id, group_id, for_user_id, created_by_id, idea, created_at, updated_at`,
-      [idea.trim(), ideaId]
+       SET idea = $1, link = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3
+       RETURNING id, group_id, for_user_id, created_by_id, idea, link, created_at, updated_at`,
+      [idea.trim(), link?.trim() || null, ideaId]
     );
 
     // Get creator and target user info

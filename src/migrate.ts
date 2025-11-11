@@ -94,9 +94,23 @@ async function migrate() {
         for_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_by_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         idea TEXT NOT NULL,
+        link TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    // Add link column if it doesn't exist (for existing databases)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'gift_ideas' AND column_name = 'link'
+        ) THEN
+          ALTER TABLE gift_ideas ADD COLUMN link TEXT;
+        END IF;
+      END $$;
     `);
 
     // Create indexes
