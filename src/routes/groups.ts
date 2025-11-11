@@ -143,6 +143,59 @@ router.post('/invitations/:id/reject', async (req: AuthRequest, res: Response) =
   }
 });
 
+// Cancel pending invitation (group owner only, must be before /:id route)
+router.delete('/:id/invitations/:invitationId', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const invitationId = parseInt(req.params.invitationId);
+
+    if (isNaN(groupId) || isNaN(invitationId)) {
+      return res.status(400).json({ error: 'Invalid group ID or invitation ID' });
+    }
+
+    // Check if user is owner of the group
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only group owner can cancel invitations' });
+    }
+
+    // Get invitation to verify it belongs to this group
+    const inviteResult = await pool.query(
+      'SELECT id, group_id, status FROM invitations WHERE id = $1',
+      [invitationId]
+    );
+
+    if (inviteResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invitation not found' });
+    }
+
+    if (inviteResult.rows[0].group_id !== groupId) {
+      return res.status(400).json({ error: 'Invitation does not belong to this group' });
+    }
+
+    if (inviteResult.rows[0].status !== 'pending') {
+      return res.status(400).json({ error: 'Can only cancel pending invitations' });
+    }
+
+    // Delete the invitation
+    await pool.query('DELETE FROM invitations WHERE id = $1', [invitationId]);
+
+    res.json({ message: 'Invitation cancelled successfully' });
+  } catch (error: any) {
+    console.error('Error cancelling invitation:', error);
+    res.status(500).json({ error: 'Failed to cancel invitation' });
+  }
+});
+
 // Get single group (with members)
 router.get('/:id', async (req: AuthRequest, res: Response) => {
   try {
