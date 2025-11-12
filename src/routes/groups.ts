@@ -219,13 +219,13 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
     // Get owner info
     const ownerResult = await pool.query(
-      'SELECT id, username, display_name FROM users WHERE id = $1',
+      'SELECT id, username, display_name, image_url FROM users WHERE id = $1',
       [group.created_by]
     );
 
     // Get members (excluding owner, as they'll be added separately)
     const membersResult = await pool.query(
-      `SELECT u.id, u.username, u.display_name, gm.joined_at
+      `SELECT u.id, u.username, u.display_name, u.image_url, gm.joined_at
        FROM group_members gm
        JOIN users u ON gm.user_id = u.id
        WHERE gm.group_id = $1
@@ -239,6 +239,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       id: owner.id,
       username: owner.username,
       display_name: owner.display_name || owner.username,
+      image_url: owner.image_url,
       joined_at: group.created_at, // Use group creation date as joined_at for owner
     };
 
@@ -248,6 +249,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
         id: m.id,
         username: m.username,
         display_name: m.display_name || m.username,
+        image_url: m.image_url,
         joined_at: m.joined_at,
       })),
     ];

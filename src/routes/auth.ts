@@ -42,7 +42,7 @@ router.post('/register', async (req: Request, res: Response) => {
 
     // Create user
     const result = await pool.query(
-      'INSERT INTO users (username, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, username, display_name, created_at',
+      'INSERT INTO users (username, password_hash, display_name) VALUES ($1, $2, $3) RETURNING id, username, display_name, image_url, created_at',
       [username.toLowerCase().trim(), passwordHash, displayName]
     );
 
@@ -62,6 +62,7 @@ router.post('/register', async (req: Request, res: Response) => {
         id: user.id,
         username: user.username,
         display_name: user.display_name || user.username,
+        image_url: user.image_url,
       },
     });
   } catch (error: any) {
@@ -80,7 +81,7 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     // Find user
-    const result = await pool.query('SELECT id, username, password_hash, display_name FROM users WHERE username = $1', [
+    const result = await pool.query('SELECT id, username, password_hash, display_name, image_url FROM users WHERE username = $1', [
       username.toLowerCase().trim(),
     ]);
 
@@ -110,6 +111,7 @@ router.post('/login', async (req: Request, res: Response) => {
         id: user.id,
         username: user.username,
         display_name: user.display_name || user.username,
+        image_url: user.image_url,
       },
     });
   } catch (error: any) {
@@ -138,7 +140,7 @@ router.get('/search', async (req: Request, res: Response) => {
 
     const searchTerm = `%${q.toLowerCase().trim()}%`;
     const result = await pool.query(
-      'SELECT id, username, display_name FROM users WHERE username LIKE $1 ORDER BY username LIMIT 20',
+      'SELECT id, username, display_name, image_url FROM users WHERE username LIKE $1 ORDER BY username LIMIT 20',
       [searchTerm]
     );
 
@@ -147,6 +149,7 @@ router.get('/search', async (req: Request, res: Response) => {
       id: row.id,
       username: row.username,
       display_name: row.display_name || row.username,
+      image_url: row.image_url,
     }));
 
     res.json({ users });
@@ -173,7 +176,7 @@ router.get('/me', async (req: Request, res: Response) => {
     const decoded: any = jwt.verify(token, secret);
 
     // Get fresh user data
-    const result = await pool.query('SELECT id, username, display_name, created_at FROM users WHERE id = $1', [decoded.userId]);
+    const result = await pool.query('SELECT id, username, display_name, image_url, created_at FROM users WHERE id = $1', [decoded.userId]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'User not found' });
@@ -185,6 +188,7 @@ router.get('/me', async (req: Request, res: Response) => {
         id: user.id,
         username: user.username,
         display_name: user.display_name || user.username,
+        image_url: user.image_url,
       },
     });
   } catch (error: any) {
@@ -224,7 +228,7 @@ router.put('/profile/display-name', async (req: Request, res: Response) => {
     const displayName = display_name?.trim() || null;
 
     const result = await pool.query(
-      'UPDATE users SET display_name = $1 WHERE id = $2 RETURNING id, username, display_name',
+      'UPDATE users SET display_name = $1 WHERE id = $2 RETURNING id, username, display_name, image_url',
       [displayName, decoded.userId]
     );
 
@@ -238,6 +242,7 @@ router.put('/profile/display-name', async (req: Request, res: Response) => {
         id: user.id,
         username: user.username,
         display_name: user.display_name || user.username,
+        image_url: user.image_url,
       },
     });
   } catch (error: any) {
@@ -288,6 +293,41 @@ router.post('/device-token', async (req: Request, res: Response) => {
     }
     console.error('Register device token error:', error);
     res.status(500).json({ error: 'Failed to register device token' });
+  }
+});
+
+// Update user profile image
+router.put('/profile/image', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const { image_url } = req.body;
+
+    if (image_url !== undefined && image_url !== null && typeof image_url !== 'string') {
+      return res.status(400).json({ error: 'image_url must be a string or null' });
+    }
+
+    const result = await pool.query(
+      'UPDATE users SET image_url = $1 WHERE id = $2 RETURNING id, username, display_name, image_url',
+      [image_url || null, userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = result.rows[0];
+
+    res.json({
+      user: {
+        id: user.id,
+        username: user.username,
+        display_name: user.display_name || user.username,
+        image_url: user.image_url,
+      },
+    });
+  } catch (error: any) {
+    console.error('Error updating profile image:', error);
+    res.status(500).json({ error: 'Failed to update profile image' });
   }
 });
 

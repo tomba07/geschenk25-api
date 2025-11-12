@@ -26,6 +26,19 @@ async function migrate() {
       END $$;
     `);
 
+    // Add image_url column if it doesn't exist (for existing databases)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'users' AND column_name = 'image_url'
+        ) THEN
+          ALTER TABLE users ADD COLUMN image_url TEXT;
+        END IF;
+      END $$;
+    `);
+
     // Create groups table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS groups (
