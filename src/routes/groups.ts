@@ -623,7 +623,7 @@ router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
 
     // Get user's assignment
     const assignmentResult = await pool.query(
-      `SELECT a.receiver_id, u.username as receiver_username, u.display_name as receiver_display_name
+      `SELECT a.receiver_id, u.username as receiver_username, u.display_name as receiver_display_name, u.image_url as receiver_image_url
        FROM assignments a
        JOIN users u ON a.receiver_id = u.id
        WHERE a.group_id = $1 AND a.giver_id = $2`,
@@ -640,6 +640,7 @@ router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
         receiver_id: row.receiver_id,
         receiver_username: row.receiver_username,
         receiver_display_name: row.receiver_display_name || row.receiver_username,
+        receiver_image_url: row.receiver_image_url,
       },
     });
   } catch (error: any) {
