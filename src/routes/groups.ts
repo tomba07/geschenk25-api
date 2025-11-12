@@ -14,7 +14,7 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
 
     const result = await pool.query(
-      `SELECT DISTINCT g.id, g.name, g.description, g.created_at, g.created_by 
+      `SELECT DISTINCT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by 
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        WHERE g.created_by = $1 OR gm.user_id = $1
@@ -204,7 +204,7 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 
     // Check if user has access to this group (owner or member)
     const accessCheck = await pool.query(
-      `SELECT g.id, g.name, g.description, g.created_at, g.created_by
+      `SELECT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
@@ -305,15 +305,15 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
 router.post('/', async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
-    const { name, description } = req.body;
+    const { name, description, image_url } = req.body;
 
     if (!name || name.trim().length === 0) {
       return res.status(400).json({ error: 'Group name is required' });
     }
 
     const result = await pool.query(
-      'INSERT INTO groups (name, description, created_by) VALUES ($1, $2, $3) RETURNING id, name, description, created_at, created_by',
-      [name.trim(), description?.trim() || null, userId]
+      'INSERT INTO groups (name, description, image_url, created_by) VALUES ($1, $2, $3, $4) RETURNING id, name, description, image_url, created_at, created_by',
+      [name.trim(), description?.trim() || null, image_url || null, userId]
     );
 
     res.status(201).json({ group: result.rows[0] });

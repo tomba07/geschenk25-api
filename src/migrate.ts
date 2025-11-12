@@ -32,9 +32,23 @@ async function migrate() {
         id SERIAL PRIMARY KEY,
         name VARCHAR(255) NOT NULL,
         description TEXT,
+        image_url TEXT,
         created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
+    `);
+
+    // Add image_url column if it doesn't exist (for existing databases)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'groups' AND column_name = 'image_url'
+        ) THEN
+          ALTER TABLE groups ADD COLUMN image_url TEXT;
+        END IF;
+      END $$;
     `);
 
     // Create group_members table
