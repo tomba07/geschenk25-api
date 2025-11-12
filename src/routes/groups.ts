@@ -323,6 +323,44 @@ router.post('/', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Update group
+router.put('/:id', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const { image_url } = req.body;
+
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    // Check if group exists and user is the owner
+    const groupCheck = await pool.query(
+      'SELECT id, created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only the group owner can update the group' });
+    }
+
+    // Update group image
+    const result = await pool.query(
+      'UPDATE groups SET image_url = $1 WHERE id = $2 RETURNING id, name, description, image_url, created_at, created_by',
+      [image_url || null, groupId]
+    );
+
+    res.json({ group: result.rows[0] });
+  } catch (error: any) {
+    console.error('Error updating group:', error);
+    res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
 // Delete group
 router.delete('/:id', async (req: AuthRequest, res: Response) => {
   try {
