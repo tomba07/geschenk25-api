@@ -623,7 +623,7 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
     }
 
     // Send push notification (don't wait for it)
-    sendInvitationNotification(inviteeId, inviterDisplayName, groupName, groupId, invitationId).catch((error) => {
+    sendInvitationNotification(inviteeId, inviterDisplayName, groupName, groupId, invitationId, userId).catch((error) => {
       console.error('Failed to send notification:', error);
     });
 

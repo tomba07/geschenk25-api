@@ -8,13 +8,14 @@ export async function sendInvitationNotification(
   inviterDisplayName: string,
   groupName: string,
   groupId: number,
-  invitationId: number
+  invitationId: number,
+  inviterId: number
 ) {
   try {
-    // Get all device tokens for the invitee
+    // Get all device tokens for the invitee (explicitly exclude the inviter)
     const tokensResult = await pool.query(
-      'SELECT token FROM device_tokens WHERE user_id = $1',
-      [inviteeId]
+      'SELECT token FROM device_tokens WHERE user_id = $1 AND user_id != $2',
+      [inviteeId, inviterId]
     );
 
     if (tokensResult.rows.length === 0) {
