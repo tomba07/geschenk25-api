@@ -600,26 +600,30 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
       [groupId, inviteeId]
     );
 
+    let invitationId: number;
+
     if (existingInvite.rows.length > 0) {
       const invite = existingInvite.rows[0];
       if (invite.status === 'pending') {
         return res.status(400).json({ error: 'Invitation already sent' });
       }
       // If rejected, update to pending
+      invitationId = invite.id;
       await pool.query(
         'UPDATE invitations SET status = $1, inviter_id = $2, created_at = CURRENT_TIMESTAMP WHERE id = $3',
         ['pending', userId, invite.id]
       );
     } else {
-      // Create new invitation
-      await pool.query(
-        'INSERT INTO invitations (group_id, inviter_id, invitee_id, status) VALUES ($1, $2, $3, $4)',
+      // Create new invitation and get the ID
+      const insertResult = await pool.query(
+        'INSERT INTO invitations (group_id, inviter_id, invitee_id, status) VALUES ($1, $2, $3, $4) RETURNING id',
         [groupId, userId, inviteeId, 'pending']
       );
+      invitationId = insertResult.rows[0].id;
     }
 
     // Send push notification (don't wait for it)
-    sendInvitationNotification(inviteeId, inviterDisplayName, groupName).catch((error) => {
+    sendInvitationNotification(inviteeId, inviterDisplayName, groupName, groupId, invitationId).catch((error) => {
       console.error('Failed to send notification:', error);
     });
 

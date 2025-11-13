@@ -6,7 +6,9 @@ const expo = new Expo();
 export async function sendInvitationNotification(
   inviteeId: number,
   inviterDisplayName: string,
-  groupName: string
+  groupName: string,
+  groupId: number,
+  invitationId: number
 ) {
   try {
     // Get all device tokens for the invitee
@@ -33,7 +35,7 @@ export async function sendInvitationNotification(
       sound: 'default',
       title: 'New Group Invitation',
       body: `${inviterDisplayName} invited you to join "${groupName}"`,
-      data: { type: 'invitation', groupName },
+      data: { type: 'invitation', groupName, groupId, invitationId },
     }));
 
     // Send notifications in chunks
