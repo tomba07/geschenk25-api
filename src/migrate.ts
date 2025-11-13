@@ -64,6 +64,19 @@ async function migrate() {
       END $$;
     `);
 
+    // Add invite_token column if it doesn't exist (for existing databases)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'groups' AND column_name = 'invite_token'
+        ) THEN
+          ALTER TABLE groups ADD COLUMN invite_token VARCHAR(32) UNIQUE;
+        END IF;
+      END $$;
+    `);
+
     // Create group_members table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS group_members (

@@ -1,12 +1,93 @@
 import express, { Request, Response } from 'express';
+import crypto from 'crypto';
 import pool from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { sendInvitationNotification } from '../services/notifications';
 
 const router = express.Router();
 
-// All routes require authentication
+// Helper function to generate invite token
+function generateInviteToken(): string {
+  return crypto.randomBytes(16).toString('hex');
+}
+
+// Public route: Get group info from invite token (no auth required)
+router.get('/invite/:token', async (req: Request, res: Response) => {
+  try {
+    const token = req.params.token;
+
+    const result = await pool.query(
+      'SELECT id, name, description, image_url FROM groups WHERE invite_token = $1',
+      [token]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid invite link' });
+    }
+
+    const group = result.rows[0];
+    res.json({ group: { id: group.id, name: group.name, description: group.description, image_url: group.image_url } });
+  } catch (error: any) {
+    console.error('Error fetching group from invite token:', error);
+    res.status(500).json({ error: 'Failed to fetch group info' });
+  }
+});
+
+// All routes below require authentication
 router.use(authenticateToken);
+
+// Join group via invite token
+router.post('/join/:token', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const token = req.params.token;
+
+    // Find group by invite token
+    const groupResult = await pool.query(
+      'SELECT id, name, created_by FROM groups WHERE invite_token = $1',
+      [token]
+    );
+
+    if (groupResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Invalid invite link' });
+    }
+
+    const group = groupResult.rows[0];
+    const groupId = group.id;
+
+    // Check if user is already a member
+    const memberCheck = await pool.query(
+      'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length > 0) {
+      return res.status(400).json({ error: 'You are already a member of this group' });
+    }
+
+    // Check if user is the owner
+    if (group.created_by === userId) {
+      return res.status(400).json({ error: 'You are the owner of this group' });
+    }
+
+    // Add user to group
+    await pool.query(
+      'INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      [groupId, userId]
+    );
+
+    // Update any pending invitations to accepted
+    await pool.query(
+      "UPDATE invitations SET status = 'accepted' WHERE group_id = $1 AND invitee_id = $2 AND status = 'pending'",
+      [groupId, userId]
+    );
+
+    res.json({ message: 'Successfully joined group', group_id: groupId });
+  } catch (error: any) {
+    console.error('Error joining group via invite token:', error);
+    res.status(500).json({ error: 'Failed to join group' });
+  }
+});
 
 // Get user's groups (both created and joined)
 router.get('/', async (req: AuthRequest, res: Response) => {
@@ -367,6 +448,68 @@ router.put('/:id', async (req: AuthRequest, res: Response) => {
   } catch (error: any) {
     console.error('Error updating group:', error);
     res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
+// Get or generate invite link for a group (owner only)
+router.get('/:id/invite-link', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    if (isNaN(groupId)) {
+      return res.status(400).json({ error: 'Invalid group ID' });
+    }
+
+    // Check if group exists and user is the owner
+    const groupCheck = await pool.query(
+      'SELECT id, created_by, invite_token FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    if (groupCheck.rows[0].created_by !== userId) {
+      return res.status(403).json({ error: 'Only the group owner can access the invite link' });
+    }
+
+    let inviteToken = groupCheck.rows[0].invite_token;
+
+    // Generate token if it doesn't exist
+    if (!inviteToken) {
+      let tokenGenerated = false;
+      let attempts = 0;
+      const maxAttempts = 5;
+
+      while (!tokenGenerated && attempts < maxAttempts) {
+        inviteToken = generateInviteToken();
+        try {
+          await pool.query(
+            'UPDATE groups SET invite_token = $1 WHERE id = $2',
+            [inviteToken, groupId]
+          );
+          tokenGenerated = true;
+        } catch (error: any) {
+          // Token collision, try again
+          if (error.code === '23505') { // Unique violation
+            attempts++;
+            continue;
+          }
+          throw error;
+        }
+      }
+
+      if (!tokenGenerated) {
+        return res.status(500).json({ error: 'Failed to generate invite link. Please try again.' });
+      }
+    }
+
+    res.json({ invite_token: inviteToken });
+  } catch (error: any) {
+    console.error('Error getting invite link:', error);
+    res.status(500).json({ error: 'Failed to get invite link' });
   }
 });
 
