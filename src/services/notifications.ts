@@ -12,23 +12,42 @@ export async function sendInvitationNotification(
   inviterId: number
 ) {
   try {
-    // Get all device tokens for the invitee (explicitly exclude the inviter)
+    // Safety check: ensure inviteeId != inviterId
+    if (inviteeId === inviterId) {
+      console.log(`Skipping notification: inviteeId (${inviteeId}) equals inviterId (${inviterId})`);
+      return;
+    }
+
+    // Get all device tokens for the invitee, but exclude tokens that are also registered for the inviter
+    // This prevents the inviter from receiving notifications when they share a device with the invitee
     const tokensResult = await pool.query(
-      'SELECT token FROM device_tokens WHERE user_id = $1 AND user_id != $2',
+      `SELECT dt.token, dt.user_id 
+       FROM device_tokens dt
+       WHERE dt.user_id = $1
+       AND NOT EXISTS (
+         SELECT 1 FROM device_tokens dt2 
+         WHERE dt2.token = dt.token AND dt2.user_id = $2
+       )`,
       [inviteeId, inviterId]
     );
 
     if (tokensResult.rows.length === 0) {
-      console.log(`No device tokens found for user ${inviteeId}`);
+      console.log(`No device tokens found for invitee user ${inviteeId} (excluding tokens shared with inviter ${inviterId})`);
       return;
     }
 
-    const tokens = tokensResult.rows.map((row: any) => row.token).filter(Expo.isExpoPushToken);
+    // Filter to valid Expo push tokens
+    const tokens = tokensResult.rows
+      .map((row: any) => row.token)
+      .filter(Expo.isExpoPushToken);
 
     if (tokens.length === 0) {
-      console.log(`No valid Expo push tokens found for user ${inviteeId}`);
+      console.log(`No valid Expo push tokens found for invitee user ${inviteeId}`);
       return;
     }
+
+    // Log for debugging
+    console.log(`Sending invitation notification to invitee ${inviteeId} (inviter: ${inviterId}), ${tokens.length} token(s)`);
 
     // Create the notification messages
     const messages = tokens.map((token) => ({
