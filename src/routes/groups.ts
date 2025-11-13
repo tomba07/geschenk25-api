@@ -14,7 +14,8 @@ router.get('/', async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
 
     const result = await pool.query(
-      `SELECT DISTINCT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by 
+      `SELECT DISTINCT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by,
+              (1 + COALESCE((SELECT COUNT(*) FROM group_members WHERE group_id = g.id), 0)) as member_count
        FROM groups g
        LEFT JOIN group_members gm ON g.id = gm.group_id
        WHERE g.created_by = $1 OR gm.user_id = $1
@@ -22,7 +23,13 @@ router.get('/', async (req: AuthRequest, res: Response) => {
       [userId]
     );
 
-    res.json({ groups: result.rows });
+    // Convert member_count from string to number (PostgreSQL returns it as string)
+    const groups = result.rows.map((row: any) => ({
+      ...row,
+      member_count: parseInt(row.member_count, 10),
+    }));
+
+    res.json({ groups });
   } catch (error: any) {
     console.error('Error fetching groups:', error);
     res.status(500).json({ error: 'Failed to fetch groups' });
