@@ -2,7 +2,7 @@ import express, { Request, Response } from 'express';
 import crypto from 'crypto';
 import pool from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
-import { sendInvitationNotification } from '../services/notifications';
+import { sendInvitationNotification, sendAssignmentNotification } from '../services/notifications';
 
 const router = express.Router();
 
@@ -745,6 +745,16 @@ router.post('/:id/assign', async (req: AuthRequest, res: Response) => {
         [groupId, members[i].id, shuffled[i].id]
       );
     }
+
+    // Get group name for notification
+    const groupNameResult = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
+    const groupName = groupNameResult.rows[0]?.name || 'your group';
+
+    // Send notifications to all members (including owner)
+    const memberIds = members.map(m => m.id);
+    sendAssignmentNotification(memberIds, groupName, groupId).catch((error) => {
+      console.error('Failed to send assignment notifications:', error);
+    });
 
     res.json({ message: 'Assignments created successfully' });
   } catch (error: any) {
