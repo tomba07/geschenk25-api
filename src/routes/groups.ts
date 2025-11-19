@@ -1301,17 +1301,30 @@ router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: 
       return res.status(400).json({ error: 'Cannot exclude the group owner' });
     }
 
-    // Insert exclusion (or ignore if already exists due to UNIQUE constraint)
+    // Insert bidirectional exclusion (both directions)
+    // If A excludes B, then B also excludes A (they won't be assigned to each other)
     try {
+      await pool.query('BEGIN');
+      
+      // Insert exclusion A -> B
       await pool.query(
         'INSERT INTO exclusions (group_id, giver_id, excluded_user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
         [groupId, targetGiverId, excluded_user_id]
       );
-      res.json({ message: 'Exclusion added successfully' });
+      
+      // Insert reverse exclusion B -> A
+      await pool.query(
+        'INSERT INTO exclusions (group_id, giver_id, excluded_user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [groupId, excluded_user_id, targetGiverId]
+      );
+      
+      await pool.query('COMMIT');
+      res.json({ message: 'Exclusion pair added successfully' });
     } catch (error: any) {
+      await pool.query('ROLLBACK');
       if (error.code === '23505') {
         // Unique constraint violation
-        res.status(400).json({ error: 'This exclusion already exists' });
+        res.status(400).json({ error: 'This exclusion pair already exists' });
       } else {
         throw error;
       }
@@ -1356,10 +1369,42 @@ router.delete('/:id/exclusions/:exclusionId', authenticateToken, async (req: Aut
       return res.status(403).json({ error: 'You can only remove your own exclusions' });
     }
 
-    // Delete exclusion
+    // Delete bidirectional exclusion (both directions)
+    // Find the pair and delete both
+    const exclusionData = exclusionCheck.rows[0];
+    const giverId = exclusionData.giver_id;
+    
+    // Get excluded_user_id from the exclusion
+    const exclusionDetails = await pool.query(
+      'SELECT excluded_user_id FROM exclusions WHERE id = $1',
+      [exclusionId]
+    );
+    
+    if (exclusionDetails.rows.length === 0) {
+      return res.status(404).json({ error: 'Exclusion not found' });
+    }
+    
+    const excludedUserId = exclusionDetails.rows[0].excluded_user_id;
+    
+    // Find the reverse exclusion
+    const reverseExclusion = await pool.query(
+      'SELECT id FROM exclusions WHERE group_id = $1 AND giver_id = $2 AND excluded_user_id = $3',
+      [groupId, excludedUserId, giverId]
+    );
+    
+    await pool.query('BEGIN');
+    
+    // Delete the exclusion
     await pool.query('DELETE FROM exclusions WHERE id = $1', [exclusionId]);
+    
+    // Delete the reverse if it exists
+    if (reverseExclusion.rows.length > 0) {
+      await pool.query('DELETE FROM exclusions WHERE id = $1', [reverseExclusion.rows[0].id]);
+    }
+    
+    await pool.query('COMMIT');
 
-    res.json({ message: 'Exclusion removed successfully' });
+    res.json({ message: 'Exclusion pair removed successfully' });
   } catch (error: any) {
     console.error('Error removing exclusion:', error);
     res.status(500).json({ error: 'Failed to remove exclusion' });
