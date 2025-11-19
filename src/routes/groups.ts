@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import pool from '../db';
 import { authenticateToken, AuthRequest } from '../middleware/auth';
 import { sendInvitationNotification, sendAssignmentNotification } from '../services/notifications';
+import { SecretSantaMatcher } from '../utils/secretSantaMatcher';
 
 const router = express.Router();
 
@@ -707,46 +708,59 @@ router.post('/:id/assign', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Need at least 2 members to create assignments' });
     }
 
-    // Create random pairing (Secret Santa algorithm)
-    const shuffled = [...members];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
+    // Get exclusions for this group
+    const exclusionsResult = await pool.query(
+      'SELECT giver_id, excluded_user_id FROM exclusions WHERE group_id = $1',
+      [groupId]
+    );
+    const exclusions = exclusionsResult.rows;
+    const exclusionSet = new Set<string>();
+    exclusions.forEach((ex: any) => {
+      exclusionSet.add(`${ex.giver_id}-${ex.excluded_user_id}`);
+    });
 
-    // Ensure no one is assigned to themselves
-    let validPairing = false;
-    let attempts = 0;
-    const maxAttempts = 100;
+    // Use bipartite matching algorithm with exclusions
+    const giverIds = members.map((m: any) => m.id);
+    const receiverIds = [...giverIds]; // Same set for Secret Santa
 
-    while (!validPairing && attempts < maxAttempts) {
-      validPairing = true;
-      for (let i = 0; i < members.length; i++) {
-        if (members[i].id === shuffled[i].id) {
-          validPairing = false;
-          // Reshuffle using Fisher-Yates
-          for (let j = shuffled.length - 1; j > 0; j--) {
-            const k = Math.floor(Math.random() * (j + 1));
-            [shuffled[j], shuffled[k]] = [shuffled[k], shuffled[j]];
-          }
-          break;
+    const matcher = new SecretSantaMatcher(giverIds, receiverIds);
+
+    // Add all valid pairings (exclude self and excluded users)
+    for (let i = 0; i < giverIds.length; i++) {
+      const giverId = giverIds[i];
+      for (let j = 0; j < receiverIds.length; j++) {
+        const receiverId = receiverIds[j];
+        // Skip self-assignment
+        if (giverId === receiverId) {
+          continue;
         }
+        // Skip exclusions
+        if (exclusionSet.has(`${giverId}-${receiverId}`)) {
+          continue;
+        }
+        // Add valid pairing
+        matcher.addSecretSantaPairing(i, j);
       }
-      attempts++;
     }
 
-    if (!validPairing) {
-      return res.status(500).json({ error: 'Failed to create valid assignments. Please try again.' });
+    // Generate pairs
+    const pairs = matcher.generateSecretSantaPairs();
+
+    // Check if we got a complete matching
+    if (pairs.size < members.length) {
+      return res.status(500).json({
+        error: 'Failed to create valid assignments with current exclusions. Some members may have too many exclusions. Please try again or adjust exclusions.',
+      });
     }
 
     // Delete existing assignments for this group
     await pool.query('DELETE FROM assignments WHERE group_id = $1', [groupId]);
 
     // Create new assignments
-    for (let i = 0; i < members.length; i++) {
+    for (const [giverId, receiverId] of pairs.entries()) {
       await pool.query(
         'INSERT INTO assignments (group_id, giver_id, receiver_id) VALUES ($1, $2, $3)',
-        [groupId, members[i].id, shuffled[i].id]
+        [groupId, giverId, receiverId]
       );
     }
 
@@ -1179,6 +1193,136 @@ router.delete('/:id/gift-ideas/:ideaId', async (req: AuthRequest, res: Response)
   } catch (error: any) {
     console.error('Error deleting gift idea:', error);
     res.status(500).json({ error: 'Failed to delete gift idea' });
+  }
+});
+
+// Get exclusions for a group
+router.get('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    // Check if user is a member of the group
+    const memberCheck = await pool.query(
+      `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
+       UNION
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Get exclusions
+    const result = await pool.query(
+      `SELECT e.id, e.giver_id, e.excluded_user_id,
+              giver.username as giver_username, giver.display_name as giver_display_name,
+              excluded.username as excluded_username, excluded.display_name as excluded_display_name
+       FROM exclusions e
+       JOIN users giver ON e.giver_id = giver.id
+       JOIN users excluded ON e.excluded_user_id = excluded.id
+       WHERE e.group_id = $1
+       ORDER BY giver.username, excluded.username`,
+      [groupId]
+    );
+
+    res.json({ exclusions: result.rows });
+  } catch (error: any) {
+    console.error('Error fetching exclusions:', error);
+    res.status(500).json({ error: 'Failed to fetch exclusions' });
+  }
+});
+
+// Add an exclusion (users can only exclude for themselves)
+router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const { excluded_user_id } = req.body;
+
+    if (!excluded_user_id) {
+      return res.status(400).json({ error: 'excluded_user_id is required' });
+    }
+
+    // Check if user is a member of the group
+    const memberCheck = await pool.query(
+      `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
+       UNION
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Check if excluded user is a member
+    const excludedMemberCheck = await pool.query(
+      `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
+       UNION
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+      [groupId, excluded_user_id]
+    );
+
+    if (excludedMemberCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Excluded user is not a member of this group' });
+    }
+
+    // Check if trying to exclude self
+    if (userId === excluded_user_id) {
+      return res.status(400).json({ error: 'Cannot exclude yourself' });
+    }
+
+    // Insert exclusion (or ignore if already exists due to UNIQUE constraint)
+    try {
+      await pool.query(
+        'INSERT INTO exclusions (group_id, giver_id, excluded_user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+        [groupId, userId, excluded_user_id]
+      );
+      res.json({ message: 'Exclusion added successfully' });
+    } catch (error: any) {
+      if (error.code === '23505') {
+        // Unique constraint violation
+        res.status(400).json({ error: 'This exclusion already exists' });
+      } else {
+        throw error;
+      }
+    }
+  } catch (error: any) {
+    console.error('Error adding exclusion:', error);
+    res.status(500).json({ error: 'Failed to add exclusion' });
+  }
+});
+
+// Remove an exclusion
+router.delete('/:id/exclusions/:exclusionId', authenticateToken, async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+    const exclusionId = parseInt(req.params.exclusionId);
+
+    // Check if exclusion exists and belongs to user
+    const exclusionCheck = await pool.query(
+      'SELECT giver_id FROM exclusions WHERE id = $1 AND group_id = $2',
+      [exclusionId, groupId]
+    );
+
+    if (exclusionCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Exclusion not found' });
+    }
+
+    if (exclusionCheck.rows[0].giver_id !== userId) {
+      return res.status(403).json({ error: 'You can only remove your own exclusions' });
+    }
+
+    // Delete exclusion
+    await pool.query('DELETE FROM exclusions WHERE id = $1', [exclusionId]);
+
+    res.json({ message: 'Exclusion removed successfully' });
+  } catch (error: any) {
+    console.error('Error removing exclusion:', error);
+    res.status(500).json({ error: 'Failed to remove exclusion' });
   }
 });
 
