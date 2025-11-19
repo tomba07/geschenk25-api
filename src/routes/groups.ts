@@ -1234,27 +1234,49 @@ router.get('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: R
   }
 });
 
-// Add an exclusion (users can only exclude for themselves)
+// Add an exclusion (owner can set for any member, members can only set for themselves)
 router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
-    const { excluded_user_id } = req.body;
+    const { giver_id, excluded_user_id } = req.body;
 
     if (!excluded_user_id) {
       return res.status(400).json({ error: 'excluded_user_id is required' });
     }
 
-    // Check if user is a member of the group
-    const memberCheck = await pool.query(
+    // Determine who the exclusion is for
+    // If giver_id is provided, owner is setting exclusion for that user
+    // Otherwise, user is setting exclusion for themselves
+    const targetGiverId = giver_id || userId;
+
+    // Check if user is owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const isOwner = groupCheck.rows[0].created_by === userId;
+
+    // If setting exclusion for someone else, must be owner
+    if (targetGiverId !== userId && !isOwner) {
+      return res.status(403).json({ error: 'Only group owner can set exclusions for other members' });
+    }
+
+    // Check if target giver is a member of the group
+    const giverMemberCheck = await pool.query(
       `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
        UNION
        SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
-      [groupId, userId]
+      [groupId, targetGiverId]
     );
 
-    if (memberCheck.rows.length === 0) {
-      return res.status(403).json({ error: 'You are not a member of this group' });
+    if (giverMemberCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'Giver is not a member of this group' });
     }
 
     // Check if excluded user is a member
@@ -1270,15 +1292,20 @@ router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: 
     }
 
     // Check if trying to exclude self
-    if (userId === excluded_user_id) {
+    if (targetGiverId === excluded_user_id) {
       return res.status(400).json({ error: 'Cannot exclude yourself' });
+    }
+
+    // Check if trying to exclude owner
+    if (excluded_user_id === groupCheck.rows[0].created_by) {
+      return res.status(400).json({ error: 'Cannot exclude the group owner' });
     }
 
     // Insert exclusion (or ignore if already exists due to UNIQUE constraint)
     try {
       await pool.query(
         'INSERT INTO exclusions (group_id, giver_id, excluded_user_id) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
-        [groupId, userId, excluded_user_id]
+        [groupId, targetGiverId, excluded_user_id]
       );
       res.json({ message: 'Exclusion added successfully' });
     } catch (error: any) {
@@ -1295,14 +1322,26 @@ router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: 
   }
 });
 
-// Remove an exclusion
+// Remove an exclusion (owner can remove any, members can only remove their own)
 router.delete('/:id/exclusions/:exclusionId', authenticateToken, async (req: AuthRequest, res: Response) => {
   try {
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
     const exclusionId = parseInt(req.params.exclusionId);
 
-    // Check if exclusion exists and belongs to user
+    // Check if user is owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const isOwner = groupCheck.rows[0].created_by === userId;
+
+    // Check if exclusion exists
     const exclusionCheck = await pool.query(
       'SELECT giver_id FROM exclusions WHERE id = $1 AND group_id = $2',
       [exclusionId, groupId]
@@ -1312,7 +1351,8 @@ router.delete('/:id/exclusions/:exclusionId', authenticateToken, async (req: Aut
       return res.status(404).json({ error: 'Exclusion not found' });
     }
 
-    if (exclusionCheck.rows[0].giver_id !== userId) {
+    // Only owner can remove exclusions for others
+    if (exclusionCheck.rows[0].giver_id !== userId && !isOwner) {
       return res.status(403).json({ error: 'You can only remove your own exclusions' });
     }
 
