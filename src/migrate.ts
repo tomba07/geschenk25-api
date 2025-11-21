@@ -166,6 +166,19 @@ async function migrate() {
       END $$;
     `);
 
+    // Add status column to group_members if it doesn't exist (for soft leave functionality)
+    await pool.query(`
+      DO $$ 
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM information_schema.columns 
+          WHERE table_name = 'group_members' AND column_name = 'status'
+        ) THEN
+          ALTER TABLE group_members ADD COLUMN status VARCHAR(20) DEFAULT 'active' CHECK (status IN ('active', 'left'));
+        END IF;
+      END $$;
+    `);
+
     // Create indexes
     await pool.query(`
       CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)

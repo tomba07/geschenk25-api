@@ -56,13 +56,27 @@ router.post('/join/:token', async (req: AuthRequest, res: Response) => {
     const group = groupResult.rows[0];
     const groupId = group.id;
 
-    // Check if user is already a member
+    // Check if user is already an active member
     const memberCheck = await pool.query(
-      'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
+      'SELECT id, status FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, userId]
     );
 
     if (memberCheck.rows.length > 0) {
+      const member = memberCheck.rows[0];
+      // If user has left, reactivate them
+      if (member.status === 'left') {
+        await pool.query(
+          "UPDATE group_members SET status = 'active' WHERE id = $1",
+          [member.id]
+        );
+        // Update invitations
+        await pool.query(
+          "UPDATE invitations SET status = 'accepted' WHERE group_id = $1 AND invitee_id = $2 AND status = 'pending'",
+          [groupId, userId]
+        );
+        return res.json({ message: 'Successfully rejoined group', group_id: groupId });
+      }
       return res.status(400).json({ error: 'You are already a member of this group' });
     }
 
@@ -71,9 +85,9 @@ router.post('/join/:token', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'You are the owner of this group' });
     }
 
-    // Add user to group
+    // Add user to group (or reactivate if they were left)
     await pool.query(
-      'INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      "INSERT INTO group_members (group_id, user_id, status) VALUES ($1, $2, 'active') ON CONFLICT (group_id, user_id) DO UPDATE SET status = 'active'",
       [groupId, userId]
     );
 
@@ -97,10 +111,10 @@ router.get('/', async (req: AuthRequest, res: Response) => {
 
     const result = await pool.query(
       `SELECT DISTINCT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by,
-              (1 + COALESCE((SELECT COUNT(*) FROM group_members WHERE group_id = g.id), 0)) as member_count
+              (1 + COALESCE((SELECT COUNT(*) FROM group_members WHERE group_id = g.id AND (status IS NULL OR status = 'active')), 0)) as member_count
        FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
-       WHERE g.created_by = $1 OR gm.user_id = $1
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND (gm.status IS NULL OR gm.status = 'active')
+       WHERE (g.created_by = $1 OR (gm.user_id = $1 AND (gm.status IS NULL OR gm.status = 'active')))
        ORDER BY g.created_at DESC`,
       [userId]
     );
@@ -174,9 +188,9 @@ router.post('/invitations/:id/accept', async (req: AuthRequest, res: Response) =
       return res.status(400).json({ error: 'Invitation is not pending' });
     }
 
-    // Add user to group_members
+    // Add user to group_members or reactivate if they left
     await pool.query(
-      'INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+      "INSERT INTO group_members (group_id, user_id, status) VALUES ($1, $2, 'active') ON CONFLICT (group_id, user_id) DO UPDATE SET status = 'active'",
       [invitation.group_id, userId]
     );
 
@@ -291,11 +305,11 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
 
-    // Check if user has access to this group (owner or member)
+    // Check if user has access to this group (owner or active member, not left)
     const accessCheck = await pool.query(
       `SELECT g.id, g.name, g.description, g.image_url, g.created_at, g.created_by
        FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, userId]
     );
@@ -312,12 +326,12 @@ router.get('/:id', async (req: AuthRequest, res: Response) => {
       [group.created_by]
     );
 
-    // Get members (excluding owner, as they'll be added separately)
+    // Get active members only (excluding owner and left members)
     const membersResult = await pool.query(
       `SELECT u.id, u.username, u.display_name, u.image_url, gm.joined_at
        FROM group_members gm
        JOIN users u ON gm.user_id = u.id
-       WHERE gm.group_id = $1
+       WHERE gm.group_id = $1 AND (gm.status IS NULL OR gm.status = 'active')
        ORDER BY gm.joined_at ASC`,
       [groupId]
     );
@@ -547,10 +561,10 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Username is required' });
     }
 
-    // Check if user is owner or member of the group
+    // Check if user is owner or active member of the group
     const groupCheck = await pool.query(
       `SELECT g.id, g.created_by FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, userId]
     );
@@ -575,9 +589,9 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Cannot invite yourself' });
     }
 
-    // Check if user is already a member
+    // Check if user is already an active member
     const memberCheck = await pool.query(
-      'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
+      'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2 AND (status IS NULL OR status = \'active\')',
       [groupId, inviteeId]
     );
 
@@ -660,7 +674,7 @@ router.post('/:id/leave', async (req: AuthRequest, res: Response) => {
 
     // Check if user is a member
     const memberCheck = await pool.query(
-      'SELECT user_id FROM group_members WHERE group_id = $1 AND user_id = $2',
+      'SELECT id FROM group_members WHERE group_id = $1 AND user_id = $2',
       [groupId, userId]
     );
 
@@ -668,9 +682,9 @@ router.post('/:id/leave', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'You are not a member of this group' });
     }
 
-    // Remove user from group
+    // Mark user as left (soft delete) - keeps them in the group for assignment integrity
     await pool.query(
-      'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
+      "UPDATE group_members SET status = 'left' WHERE group_id = $1 AND user_id = $2",
       [groupId, userId]
     );
 
@@ -738,12 +752,12 @@ router.post('/:id/assign', async (req: AuthRequest, res: Response) => {
       return res.status(403).json({ error: 'Only group owner can trigger assignments' });
     }
 
-    // Get all members (including owner)
+    // Get all active members (including owner, excluding left members)
     const membersResult = await pool.query(
       `SELECT DISTINCT u.id, u.username
        FROM users u
        WHERE (u.id = $1 AND u.id IN (SELECT created_by FROM groups WHERE id = $2))
-          OR u.id IN (SELECT user_id FROM group_members WHERE group_id = $2)
+          OR u.id IN (SELECT user_id FROM group_members WHERE group_id = $2 AND (status IS NULL OR status = 'active'))
        ORDER BY u.id`,
       [userId, groupId]
     );
@@ -752,6 +766,19 @@ router.post('/:id/assign', async (req: AuthRequest, res: Response) => {
 
     if (members.length < 2) {
       return res.status(400).json({ error: 'Need at least 2 members to create assignments' });
+    }
+
+    // Check if there are pending invitations - prevent assignment if so
+    const pendingInvitesResult = await pool.query(
+      'SELECT COUNT(*) as count FROM invitations WHERE group_id = $1 AND status = $2',
+      [groupId, 'pending']
+    );
+
+    const pendingCount = parseInt(pendingInvitesResult.rows[0].count, 10);
+    if (pendingCount > 0) {
+      return res.status(400).json({ 
+        error: `Cannot create assignments while there ${pendingCount === 1 ? 'is' : 'are'} ${pendingCount} pending invitation${pendingCount === 1 ? '' : 's'}. Please wait for all invitations to be accepted or rejected, or cancel them first.` 
+      });
     }
 
     // Get exclusions for this group
@@ -833,10 +860,10 @@ router.get('/:id/assignment', async (req: AuthRequest, res: Response) => {
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
 
-    // Check if user has access to this group
+    // Check if user has access to this group (owner or active member)
     const accessCheck = await pool.query(
       `SELECT g.id FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, userId]
     );
@@ -974,10 +1001,10 @@ router.post('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'for_user_id and idea are required' });
     }
 
-    // Check if user has access to this group (owner or member)
+    // Check if user has access to this group (owner or active member)
     const groupCheck = await pool.query(
       `SELECT g.id FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, userId]
     );
@@ -986,10 +1013,10 @@ router.post('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
       return res.status(404).json({ error: 'Group not found' });
     }
 
-    // Check if for_user_id is a member of the group (owner or member)
+    // Check if for_user_id is an active member of the group (owner or active member)
     const memberCheck = await pool.query(
       `SELECT 1 FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, for_user_id]
     );
@@ -1052,10 +1079,10 @@ router.get('/:id/gift-ideas', async (req: AuthRequest, res: Response) => {
       return res.status(400).json({ error: 'Invalid group ID' });
     }
 
-    // Check if user has access to this group (owner or member)
+    // Check if user has access to this group (owner or active member)
     const groupCheck = await pool.query(
       `SELECT g.id FROM groups g
-       LEFT JOIN group_members gm ON g.id = gm.group_id
+       LEFT JOIN group_members gm ON g.id = gm.group_id AND gm.user_id = $2 AND (gm.status IS NULL OR gm.status = 'active')
        WHERE g.id = $1 AND (g.created_by = $2 OR gm.user_id = $2)`,
       [groupId, userId]
     );
@@ -1248,11 +1275,11 @@ router.get('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: R
     const userId = req.userId!;
     const groupId = parseInt(req.params.id);
 
-    // Check if user is a member of the group
+    // Check if user is an active member of the group
     const memberCheck = await pool.query(
       `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
        UNION
-       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND (status IS NULL OR status = 'active')`,
       [groupId, userId]
     );
 
@@ -1313,11 +1340,11 @@ router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: 
       return res.status(403).json({ error: 'Only group owner can set exclusions for other members' });
     }
 
-    // Check if target giver is a member of the group
+    // Check if target giver is an active member of the group
     const giverMemberCheck = await pool.query(
       `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
        UNION
-       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND (status IS NULL OR status = 'active')`,
       [groupId, targetGiverId]
     );
 
@@ -1325,11 +1352,11 @@ router.post('/:id/exclusions', authenticateToken, async (req: AuthRequest, res: 
       return res.status(400).json({ error: 'Giver is not a member of this group' });
     }
 
-    // Check if excluded user is a member
+    // Check if excluded user is an active member
     const excludedMemberCheck = await pool.query(
       `SELECT 1 FROM groups WHERE id = $1 AND created_by = $2
        UNION
-       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2`,
+       SELECT 1 FROM group_members WHERE group_id = $1 AND user_id = $2 AND (status IS NULL OR status = 'active')`,
       [groupId, excluded_user_id]
     );
 
