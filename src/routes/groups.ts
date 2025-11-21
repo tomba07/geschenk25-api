@@ -635,6 +635,52 @@ router.post('/:id/invite', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// Leave group (member can leave, but owner cannot)
+router.post('/:id/leave', async (req: AuthRequest, res: Response) => {
+  try {
+    const userId = req.userId!;
+    const groupId = parseInt(req.params.id);
+
+    // Check if group exists and get owner
+    const groupCheck = await pool.query(
+      'SELECT created_by FROM groups WHERE id = $1',
+      [groupId]
+    );
+
+    if (groupCheck.rows.length === 0) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    const ownerId = groupCheck.rows[0].created_by;
+
+    // Owner cannot leave the group (they must delete it instead)
+    if (userId === ownerId) {
+      return res.status(400).json({ error: 'Group owner cannot leave the group. Please delete the group instead.' });
+    }
+
+    // Check if user is a member
+    const memberCheck = await pool.query(
+      'SELECT user_id FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    if (memberCheck.rows.length === 0) {
+      return res.status(400).json({ error: 'You are not a member of this group' });
+    }
+
+    // Remove user from group
+    await pool.query(
+      'DELETE FROM group_members WHERE group_id = $1 AND user_id = $2',
+      [groupId, userId]
+    );
+
+    res.json({ message: 'Left group successfully' });
+  } catch (error: any) {
+    console.error('Error leaving group:', error);
+    res.status(500).json({ error: 'Failed to leave group' });
+  }
+});
+
 // Remove member from group (owner only)
 router.delete('/:id/members/:userId', async (req: AuthRequest, res: Response) => {
   try {
