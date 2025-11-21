@@ -87,9 +87,10 @@ export async function sendAssignmentNotification(
       return;
     }
 
-    // Get all device tokens for all users
+    // Get all device tokens for all users, deduplicated by token
+    // This ensures each device only receives one notification, even if the token is registered for multiple users
     const tokensResult = await pool.query(
-      'SELECT DISTINCT user_id, token FROM device_tokens WHERE user_id = ANY($1)',
+      'SELECT DISTINCT token FROM device_tokens WHERE user_id = ANY($1)',
       [userIds]
     );
 
@@ -98,16 +99,20 @@ export async function sendAssignmentNotification(
       return;
     }
 
-    const tokens = tokensResult.rows
-      .map((row: any) => row.token)
-      .filter(Expo.isExpoPushToken);
+    // Extract tokens, filter to valid Expo tokens, and deduplicate in JavaScript as well
+    const allTokens = tokensResult.rows.map((row: any) => row.token);
+    const validTokens = allTokens.filter(Expo.isExpoPushToken);
+    const tokens = Array.from(new Set(validTokens)); // Deduplicate
 
     if (tokens.length === 0) {
       console.log(`No valid Expo push tokens found for users: ${userIds.join(', ')}`);
       return;
     }
 
-    // Create the notification messages
+    // Log for debugging
+    console.log(`Sending assignment notification to ${tokens.length} unique device(s) for group ${groupId}`);
+
+    // Create the notification messages - one per unique device token
     const messages = tokens.map((token) => ({
       to: token,
       sound: 'default',
